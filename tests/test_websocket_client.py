@@ -93,6 +93,7 @@ def _subscribed_client(
     """
     client = _create_client(user_role, _command_handler(), user_id=user_id)
     client._events_unsub_callback = None
+    client._hidden_playlists = set()
     client._send_message_sync = MagicMock()
     client.mass.config.get_setup_flow_access = MagicMock(return_value=access)
     client._subscribe_to_events()
@@ -100,7 +101,8 @@ def _subscribed_client(
 
 
 def _sent_events(client: Any, event: MassEvent) -> list[MassEvent]:
-    """Feed the event to the handler the client subscribed with, returning what it forwarded."""
+    """Feed the event to the handler the client subscribed with, returning what it sent for it."""
+    client._send_message_sync.reset_mock()
     client.mass.subscribe.call_args.args[0](event)
     return [call.args[0] for call in client._send_message_sync.call_args_list]
 
@@ -353,8 +355,15 @@ async def test_other_events_are_forwarded_untouched() -> None:
     assert _sent_events(client, event) == [event]
 
 
-def _playlist_event(access: PlaylistAccess | None) -> MassEvent:
-    """Return a media item update event about a Music Assistant playlist with the given record."""
+def _playlist_event(
+    access: PlaylistAccess | None, event: EventType = EventType.MEDIA_ITEM_UPDATED
+) -> MassEvent:
+    """
+    Return a media item event about a Music Assistant playlist with the given access record.
+
+    :param access: The access record of the playlist, None for a household playlist.
+    :param event: The event type to signal the playlist with.
+    """
     playlist = Playlist(
         item_id="1",
         provider="library",
@@ -364,7 +373,7 @@ def _playlist_event(access: PlaylistAccess | None) -> MassEvent:
         },
         access=access,
     )
-    return MassEvent(event=EventType.MEDIA_ITEM_UPDATED, object_id=playlist.uri, data=playlist)
+    return MassEvent(event=event, object_id=playlist.uri, data=playlist)
 
 
 @pytest.mark.parametrize(
@@ -392,8 +401,70 @@ def _playlist_event(access: PlaylistAccess | None) -> MassEvent:
 async def test_personal_playlist_events_only_reach_who_may_see_them(
     access: PlaylistAccess | None, user_role: str | None, user_id: str, forwarded: bool
 ) -> None:
-    """A media item event about a personal playlist is dropped for everyone else."""
+    """A media item event about a personal playlist reaches everyone else only as a bare delete."""
     client = _subscribed_client(user_role, user_id=user_id)
     event = _playlist_event(access)
+    gone = MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=event.object_id)
 
-    assert _sent_events(client, event) == ([event] if forwarded else [])
+    assert _sent_events(client, event) == ([event] if forwarded else [gone])
+
+
+@pytest.mark.asyncio
+async def test_users_losing_sight_of_a_playlist_are_told_it_is_gone() -> None:
+    """Users who may no longer see a playlist are told once it is gone, the rest gets the update."""
+    clients = {
+        user_id: _subscribed_client(UserRole.USER, user_id=user_id)
+        for user_id in ("user_2", "user_3", "user_4")
+    }
+    shared = _playlist_event(
+        PlaylistAccess(
+            owner="user_1", sharing=ProviderSharing.SELECTED, shared_users=["user_2", "user_3"]
+        )
+    )
+    gone = MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=shared.object_id)
+
+    assert _sent_events(clients["user_2"], shared) == [shared]
+    assert _sent_events(clients["user_3"], shared) == [shared]
+    assert _sent_events(clients["user_4"], shared) == [gone]
+
+    unshared = _playlist_event(
+        PlaylistAccess(owner="user_1", sharing=ProviderSharing.SELECTED, shared_users=["user_2"])
+    )
+
+    assert _sent_events(clients["user_2"], unshared) == [unshared]
+    assert _sent_events(clients["user_3"], unshared) == [gone]
+    assert _sent_events(clients["user_4"], unshared) == []
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_shared_again_is_announced_gone_again() -> None:
+    """A playlist that becomes visible and is hidden again is announced gone a second time."""
+    client = _subscribed_client(UserRole.USER, user_id="user_2")
+    private = _playlist_event(PlaylistAccess(owner="user_1"))
+    shared = _playlist_event(
+        PlaylistAccess(owner="user_1", sharing=ProviderSharing.SELECTED, shared_users=["user_2"])
+    )
+    gone = MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=private.object_id)
+
+    assert _sent_events(client, private) == [gone]
+    assert _sent_events(client, private) == []
+    assert _sent_events(client, shared) == [shared]
+    assert _sent_events(client, private) == [gone]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", [EventType.MEDIA_ITEM_ADDED, EventType.MEDIA_ITEM_DELETED])
+async def test_any_event_about_a_hidden_playlist_arrives_as_a_bare_delete(
+    event_type: EventType,
+) -> None:
+    """
+    No event about a playlist a user may not see carries its payload to that user.
+
+    :param event_type: The media item event type the playlist is signalled with.
+    """
+    client = _subscribed_client(UserRole.USER, user_id="user_2")
+    event = _playlist_event(PlaylistAccess(owner="user_1"), event=event_type)
+
+    assert _sent_events(client, event) == [
+        MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=event.object_id)
+    ]

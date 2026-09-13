@@ -79,6 +79,8 @@ class WebsocketClientHandler:
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # uris of the personal playlists this client was told are gone
+        self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -613,12 +615,7 @@ class WebsocketClientHandler:
                 elif not access.allows(user):
                     return
 
-            if (
-                isinstance(event.data, Playlist)
-                and event.data.access is not None
-                and not access_allows(event.data.access, self._authenticated_user)
-            ):
-                # a personal playlist is only announced to the users who may see it
+            if isinstance(event.data, Playlist) and not self._forward_playlist_event(event):
                 return
 
             if event.event == EventType.TASKS_UPDATED:
@@ -653,3 +650,25 @@ class WebsocketClientHandler:
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
+
+    def _forward_playlist_event(self, event: MassEvent) -> bool:
+        """
+        Return whether an event about a playlist may reach this client as it was signalled.
+
+        A personal playlist is only announced to the users who may see it. A client whose
+        user may not (or no longer) see it is instead told once that the playlist is gone,
+        so it drops the row it may still hold.
+
+        :param event: The event carrying the playlist as its data.
+        """
+        access = event.data.access
+        if access is None or access_allows(access, self._authenticated_user):
+            if event.object_id:
+                self._hidden_playlists.discard(event.object_id)
+            return True
+        if event.object_id and event.object_id not in self._hidden_playlists:
+            self._hidden_playlists.add(event.object_id)
+            self._send_message_sync(
+                MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=event.object_id)
+            )
+        return False
