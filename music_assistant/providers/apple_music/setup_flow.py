@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
 from .constants import (
+    CONF_CUSTOM_APP_TOKEN,
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
@@ -37,10 +38,10 @@ async def run_setup(session: SetupSession) -> None:
     """
     Run the Apple Music setup flow.
 
-    Resolves the Apple Music developer (app) token - preferring the bundled one and
-    prompting for a manual token only when the bundle is empty/expired - then obtains a
-    music user token via the MusicKit browser sign-in (or an advanced manual override)
-    and persists them as setup data.
+    Resolves the Apple Music developer (app) token - preferring the bundled one, unless
+    the user opts into their own, and prompting for a manual token when the bundle is
+    empty/expired - then obtains a music user token via the MusicKit browser sign-in (or
+    an advanced manual override) and persists them as setup data.
 
     :param session: The setup session driving the flow.
     """
@@ -71,24 +72,45 @@ async def run_setup(session: SetupSession) -> None:
             app_token_errors = {CONF_MUSIC_APP_TOKEN: "invalid_value"}
         collected[CONF_MUSIC_APP_TOKEN] = app_token
 
+    # Apple rate limits per developer token, so the bundled one is shared by every install;
+    # users with their own Apple Developer account may opt out of that shared limit
+    offer_custom_app_token = CONF_MUSIC_APP_TOKEN not in collected
+    stored_app_token = str(session.context.setup_data.get(CONF_MUSIC_APP_TOKEN) or "")
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
-        user_values = await session.form(
-            [
-                CONF_ENTRY_UNOFFICIAL_PROVIDER,
+        entries = [
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_MUSIC_USER_MANUAL_TOKEN,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                advanced=True,
+                help_link="https://www.music-assistant.io/music-providers/apple-music/",
+            ),
+        ]
+        if offer_custom_app_token:
+            entries.append(
                 ConfigEntry(
-                    key=CONF_MUSIC_USER_MANUAL_TOKEN,
+                    key=CONF_CUSTOM_APP_TOKEN,
                     type=ConfigEntryType.SECURE_STRING,
                     required=False,
                     advanced=True,
+                    default_value=stored_app_token or None,
                     help_link="https://www.music-assistant.io/music-providers/apple-music/",
-                ),
-            ],
-            step_id="user",
-            errors=errors,
-        )
+                )
+            )
+        user_values = await session.form(entries, step_id="user", errors=errors)
         manual_token = str(user_values.get(CONF_MUSIC_USER_MANUAL_TOKEN) or "").strip()
         attempt = dict(collected)
+        if offer_custom_app_token:
+            custom_app_token = str(user_values.get(CONF_CUSTOM_APP_TOKEN) or "").strip()
+            if custom_app_token and not await _app_token_accepted(mass, custom_app_token):
+                errors = {CONF_CUSTOM_APP_TOKEN: "invalid_value"}
+                continue
+            app_token = custom_app_token or MUSIC_APP_TOKEN
+            # a music user token only works with the developer token it was issued for, so
+            # always store the one used here; empty falls back to the bundled token
+            attempt[CONF_MUSIC_APP_TOKEN] = custom_app_token
         if manual_token:
             # advanced escape hatch: a manual user token skips the browser sign-in
             # (e.g. child accounts, where MusicKit authorize() is unavailable)

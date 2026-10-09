@@ -34,6 +34,8 @@ DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
 CONF_MUSIC_APP_TOKEN = "music_app_token"
+# setup form field only, its value is stored under CONF_MUSIC_APP_TOKEN
+CONF_CUSTOM_APP_TOKEN = "custom_music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"

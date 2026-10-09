@@ -5,6 +5,10 @@
     },
     "music_user_manual_token": {
       "label": "Manual Music User Token"
+    },
+    "custom_music_app_token": {
+      "label": "Own MusicKit developer token (optional)",
+      "description": "Leave empty to use the developer token that ships with Music Assistant. Apple rate limits each developer token across everyone using it, so the shared token can be throttled when many people use Apple Music at once. With an Apple Developer Program membership you can generate your own MusicKit developer token and paste it here so only your own usage counts towards its limit. Developer tokens expire after at most 6 months; replace it here before then."
     }
   },
   "setup_flow": {
@@ -14,7 +18,7 @@
     },
     "user": {
       "title": "Sign in to Apple Music",
-      "description": "Continue to sign in with your Apple ID in a browser window. Advanced users can instead paste a Music User Token, for example for child accounts where the browser sign-in is unavailable."
+      "description": "Continue to sign in with your Apple ID in a browser window. Advanced users can instead paste a Music User Token, for example for child accounts where the browser sign-in is unavailable, or use their own MusicKit developer token instead of the shared one."
     },
     "auth": {
       "title": "Authorize Music Assistant",
